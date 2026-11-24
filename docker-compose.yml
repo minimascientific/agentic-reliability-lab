@@ -1,0 +1,53 @@
+# Synthetic corporate IT sandbox. Nothing here connects to a real system.
+# Usage: cp .env.example .env (set local passwords), then `make up`.
+name: arl
+
+services:
+  ops-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: arl_ops
+      POSTGRES_USER: arl_admin
+      POSTGRES_PASSWORD: ${OPS_DB_ADMIN_PASSWORD:?set in .env}
+      ARL_AGENT_DB_PASSWORD: ${ARL_AGENT_DB_PASSWORD:?set in .env}
+    ports: ["127.0.0.1:5433:5432"]
+    volumes:
+      - ops-data:/var/lib/postgresql/data
+      - ./db/ops:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arl_admin -d arl_ops"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: app_admin
+      POSTGRES_PASSWORD: ${APP_DB_ADMIN_PASSWORD:?set in .env}
+      ORDERS_APP_PASSWORD: ${ORDERS_APP_PASSWORD:?set in .env}
+    ports: ["127.0.0.1:5434:5432"]
+    volumes:
+      - app-data:/var/lib/postgresql/data
+      - ./db/app:/docker-entrypoint-initdb.d:ro
+    restart: "no"   # a stopped database stays stopped until someone (or the agent) restarts it
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_admin -d orders"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  orders-api:
+    build: .
+    command: ["uvicorn", "arl.sim.orders_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      APP_DATABASE_URL: postgresql://orders_app:${ORDERS_APP_PASSWORD}@app-db:5432/orders
+    ports: ["127.0.0.1:8101:8000"]
+    depends_on:
+      app-db: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  ops-data:
+  app-data:

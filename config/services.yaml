@@ -1,0 +1,15 @@
+# Service catalog: the only services the agent may inspect, and how to reach them.
+# Addresses assume the agent runs on the host with the Docker Compose ports published.
+# Override any address with an env var, e.g. ARL_SVC_ORDERS_API_HEALTH_URL.
+services:
+  orders-api:
+    description: Internal order lookup application used by Sales Operations.
+    health_url: http://localhost:8101/health
+    tcp: {host: localhost, port: 8101}
+    depends_on: [app-db]
+  app-db:
+    description: PostgreSQL database backing orders-api.
+    tcp: {host: localhost, port: 5434}
+  ops-db:
+    description: The agent's own operational database (audit, checkpoints). Never a remediation target.
+    tcp: {host: localhost, port: 5433}

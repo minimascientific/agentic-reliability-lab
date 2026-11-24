@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and unit/workflow tests (no API key, no Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Lint (ruff, including bandit security rules)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Unit and workflow tests
+        env:
+          LANGGRAPH_STRICT_MSGPACK: "true"
+        run: uv run pytest -m "not integration" -v
+
+  integration:
+    name: Real outage tests against the Docker Compose sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Create throwaway .env for this run only
+        run: |
+          cp .env.example .env
+          for v in change-me-ops-admin change-me-agent change-me-app-admin change-me-orders; do
+            sed -i "s/$v/$(openssl rand -hex 16)/g" .env
+          done
+      - name: Start sandbox
+        run: docker compose up -d --build --wait
+      - name: Integration tests
+        run: uv run pytest -m integration -v
+      - name: Sandbox logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+  security:
+    name: Dependency audit and secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Audit locked dependencies for known vulnerabilities
+        run: |
+          uv export --locked --no-dev --no-hashes --no-emit-project > /tmp/requirements.txt
+          uvx pip-audit --strict -r /tmp/requirements.txt
+      - name: Scan history for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

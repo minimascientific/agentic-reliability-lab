@@ -1,0 +1,16 @@
+# Deterministic policy, evaluated in code after the model proposes an action.
+# The model cannot change these values and never sees them as editable.
+min_confidence: 0.7
+require_cited_evidence: true
+# Targets that are never remediated, even if an action's allowlist is edited by mistake.
+protected_targets: [ops-db, platform-ops, agent]
+approval:
+  ttl_minutes: 15
+  # Change types that may run without a human. Empty: every write needs approval.
+  auto_approve_change_types: []
+# Diagnostic tools allowed per incident category (read-only).
+diagnostic_tools:
+  database_connectivity: [check_service_health, check_tcp_port]
+  integration_failure: [check_service_health]
+  account_access: []
+  unknown: []

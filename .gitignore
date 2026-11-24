@@ -1,0 +1,19 @@
+# Secrets and local-only material
+.env
+.env.*
+!.env.example
+private/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Reports
+reports/
+.DS_Store

@@ -1,0 +1,11 @@
+# Action catalog: the ONLY write operations the agent can ever request.
+# An action not listed here cannot be executed, whatever the model proposes.
+actions:
+  restart_service:
+    description: Restart a sandbox service container through the platform-ops service.
+    change_type: normal          # ITIL: normal change -> human approval required
+    allowed_targets: [app-db]    # explicit allowlist of sandbox services
+    cooldown_minutes: 30         # at most one restart per target per 30 minutes
+    verification:                # deterministic checks that must pass afterwards
+      - {check: tcp, service: app-db}
+      - {check: health, service: orders-api}
