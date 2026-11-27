@@ -7,7 +7,7 @@ tamper-evident audit trail.
 
 The design rule: **the language model proposes; deterministic code decides and acts.**
 
-> **Status: increment 1 of the INC-001 milestone.** What works today and what does not is listed
+> **Status: INC-001 runs end to end with the scripted model (increment 2a).** What works today and what does not is listed
 > under [Status](#status). Nothing here connects to, or is modelled on, any real organisation's
 > systems. All services, tickets, users and data are fictional.
 
@@ -68,7 +68,9 @@ the first live model run exposed, is in the [engineering journal](docs/engineeri
 - **Defence in depth.** The executor re-runs the policy and re-validates the approval itself,
   so even a routing bug cannot execute an unapproved action.
 - **No shell, no Docker socket for the agent.** Restarts go through a separate `platform-ops`
-  service with a narrow API (increment 2).
+  service with one endpoint, its own target allowlist, a token, an idempotency key and a rate
+  limit. Only a socket proxy that forwards container restart/stop/kill touches Docker
+  ([ADR 0004](docs/adr/0004-restarts-through-platform-ops.md)).
 - **Untrusted text stays data.** Ticket text, tool output and runbooks are passed to the model
   inside tags it is told never to obey; nothing the model writes is executed.
 - **Hard limits** on graph steps, diagnostic rounds, tool calls, LLM calls, tokens and cost.
@@ -83,15 +85,16 @@ Requires [Colima](https://github.com/abiosoft/colima) (or Docker Desktop) and
 
 ```bash
 colima start
-cp .env.example .env          # set your own local passwords; API key optional
+cp .env.example .env          # set your own passwords and PLATFORM_OPS_TOKEN; API key optional
 uv sync
-make up                       # ops-db, app-db, orders-api
+make up                       # ops-db, app-db, orders-api, platform-ops, docker-proxy
 make status                   # orders-api /health -> 200
 
 make fault-db-down            # INC-001: stop app-db for real
 make status                   # orders-api /health -> 503, "Connection refused"
-uv run arl-demo               # run the workflow (scripted model, free)
-make fault-clear              # restore app-db by hand (increment 2: the agent does this)
+uv run arl-demo               # run the workflow (scripted model, free); approve with y
+make status                   # orders-api /health -> 200 again: the agent restarted app-db
+make fault-clear              # only needed if you rejected the approval
 ```
 
 To use real Claude instead of the scripted model, put your key in `.env` and run
@@ -101,8 +104,8 @@ To use real Claude instead of the scripted model, put your key in `.env` and run
 ## Tests
 
 ```bash
-make test               # 61 unit and workflow tests: no Docker, no API key, no cost
-make test-integration   # real outage + database permission tests (needs `make up`)
+make test               # 83 unit and workflow tests: no Docker, no API key, no cost
+make test-integration   # 4 tests on the live sandbox: real outage, real restart, permissions
 make lint               # ruff, including bandit security rules
 ```
 
@@ -127,8 +130,9 @@ Claude comes in a later increment.
 | Audit trail: in-memory and Postgres (append-only role) | Implemented |
 | LLM budget: calls, tokens, cost per run | Implemented |
 | Claude backend (`ClaudeLLM`) | Implemented, not yet exercised by an eval suite |
-| `platform-ops` restart service | Next increment; today an approved restart fails safely and escalates |
+| `platform-ops` restart service behind a Docker socket proxy | Implemented; end-to-end INC-001 run tested with the scripted model |
 | ITSM ticket service, Postgres checkpointer, log collection | Next increments |
+| Real Claude run of INC-001 | Not yet run |
 | pgvector retrieval (today: keyword retrieval over runbooks) | Planned |
 | AI evaluation suite, web UI, INC-002 to INC-005 | Planned |
 
@@ -147,6 +151,7 @@ src/arl/
   prompts/         versioned system prompts
   remediation.py   executor and verifier
   audit.py         hash-chained audit trail
+  services/        platform-ops (the only component that can restart a container)
   sim/             synthetic services (orders-api)
 tests/             unit, workflow and integration tests
 ```

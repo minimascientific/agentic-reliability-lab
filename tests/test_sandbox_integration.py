@@ -10,11 +10,14 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from datetime import UTC, datetime
 
+import httpx
 import psycopg
 import pytest
+from langgraph.types import Command
 
-from arl.audit import PostgresAuditLog, verify_chain
+from arl.audit import InMemoryAuditLog, PostgresAuditLog, verify_chain
 from arl.config import load_dotenv
 from arl.models import ToolRequest
 from arl.tools.catalog import load_policy, load_services
@@ -83,3 +86,69 @@ def test_postgres_audit_log_is_append_only_for_the_agent_role(agent_conn):
         agent_conn.execute("UPDATE ops.audit_event SET data = '{}' WHERE run_id = %s", (run_id,))
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         agent_conn.execute("DELETE FROM ops.audit_event WHERE run_id = %s", (run_id,))
+
+
+# --- platform-ops: the real restart path -------------------------------------------------
+
+
+def platform_post(target: str, token: str | None, key: str = "k" * 64) -> httpx.Response:
+    headers = {"Idempotency-Key": key}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    return httpx.post(
+        f"{os.environ.get('PLATFORM_OPS_URL', 'http://localhost:8190')}/v1/services/{target}/restart",
+        headers=headers,
+        timeout=30,
+    )
+
+
+def test_platform_ops_refuses_bad_token_and_unlisted_targets():
+    load_dotenv()
+    token = os.environ["PLATFORM_OPS_TOKEN"]
+    assert platform_post("app-db", token=None).status_code == 401
+    assert platform_post("app-db", token="x" * 40).status_code == 401
+    for target in ("ops-db", "orders-api", "platform-ops", "docker-proxy"):
+        assert platform_post(target, token=token).status_code == 403
+
+
+def test_inc001_end_to_end_with_real_restart(toolbox):
+    """Stop app-db for real, run the workflow (scripted model), approve, and expect resolved.
+
+    Note: platform-ops allows one restart of app-db per minute, so running this right after
+    a demo restart returns 429 and the run escalates with remediation_failed. Wait a minute.
+    """
+    from arl.cli import DEMO_INCIDENT, build
+    from arl.config import Settings
+    from arl.graph.workflow import new_run
+
+    settings = Settings.from_env()
+    if settings.llm_backend != "scripted":
+        pytest.skip("integration tests never call a paid model")
+    assert wait_for(lambda: run(toolbox, "check_service_health", "orders-api").ok), "sandbox not healthy"
+
+    compose("stop", "app-db")
+    try:
+        audit = InMemoryAuditLog()
+        graph = build(settings, audit)
+        state = new_run(DEMO_INCIDENT)
+        config = {"configurable": {"thread_id": state["run_id"]}, "recursion_limit": 60}
+        graph.invoke(state, config)
+        request = graph.get_state(config).interrupts[0].value["approval_request"]
+        decision = {
+            "approval_id": request["approval_id"],
+            "action_hash": request["action_hash"],
+            "approved": True,
+            "approver": "integration.tester",
+            "comment": "",
+            "decided_at": datetime.now(UTC).isoformat(),
+        }
+        graph.invoke(Command(resume=decision), config)
+        final = graph.get_state(config).values
+    finally:
+        if not run(toolbox, "check_tcp_port", "app-db").ok:
+            compose("start", "app-db")
+
+    assert final["status"] == "resolved", final.get("escalation")
+    assert final["remediation"]["result"]["status"] == "restarted"
+    assert final["verification"].passed
+    assert verify_chain(audit.events(final["run_id"]))

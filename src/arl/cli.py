@@ -5,8 +5,9 @@
     ARL_LLM_BACKEND=anthropic uv run arl-demo   # real Claude (uses your API key and budget)
 
 Diagnostics run for real against the sandbox. The workflow pauses at the approval gate and
-asks you in the terminal. Increment 1 has no platform-ops service yet, so an approved restart
-fails safely and the run escalates; increment 2 adds the restart path.
+asks you in the terminal. An approved restart goes through platform-ops (see
+docs/adr/0004-restarts-through-platform-ops.md); the verifier then checks app-db and
+orders-api before the run is marked resolved.
 """
 
 from __future__ import annotations

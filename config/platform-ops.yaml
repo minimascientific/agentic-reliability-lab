@@ -1,0 +1,8 @@
+# platform-ops: the only component that can change a container.
+# This file belongs to platform-ops, not to the agent. Even if the agent's action catalog
+# were edited to allow another target, platform-ops would still refuse it.
+targets:
+  app-db:
+    container: arl-app-db        # fixed container_name in docker-compose.yml
+    stop_timeout_seconds: 10     # how long Docker waits for a clean shutdown before kill
+min_interval_seconds: 60         # at most one restart per target per minute (own rate limit)
