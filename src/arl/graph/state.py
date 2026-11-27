@@ -19,6 +19,7 @@ from typing import Annotated, Literal, TypedDict
 from arl.models import (
     ApprovalDecision,
     ApprovalRequest,
+    BaselineScope,
     Classification,
     DiagnosticPlan,
     Escalation,
@@ -45,6 +46,7 @@ class RunState(TypedDict, total=False):
     proposal: RemediationProposal
 
     # Deterministic records
+    baseline_scope: BaselineScope
     evidence: Annotated[list[Evidence], operator.add]
     runbooks: list[RunbookRef]
     diagnostic_rounds: int

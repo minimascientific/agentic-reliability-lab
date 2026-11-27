@@ -33,6 +33,7 @@ STATE_TYPES = [
     "CheckResult",
     "VerificationResult",
     "Escalation",
+    "BaselineScope",
     "LLMUsage",
 ]
 

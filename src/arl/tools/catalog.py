@@ -22,6 +22,9 @@ class Service(BaseModel):
     health_url: str | None = None
     tcp: TcpEndpoint | None = None
     depends_on: list[str] = Field(default_factory=list)
+    user_facing: bool = Field(
+        default=False, description="Users interact with it directly, so a symptom-only ticket may be about it"
+    )
 
 
 class VerificationCheck(BaseModel):
@@ -43,12 +46,19 @@ class ApprovalPolicy(BaseModel):
     auto_approve_change_types: list[str] = Field(default_factory=list)
 
 
+class BaselinePolicy(BaseModel):
+    tools: list[str]
+    max_dependency_depth: int = Field(ge=0, le=5)
+    max_services: int = Field(ge=1, le=10)
+
+
 class Policy(BaseModel):
     min_confidence: float
     require_cited_evidence: bool
     protected_targets: list[str]
     approval: ApprovalPolicy
     diagnostic_tools: dict[str, list[str]]
+    baseline: BaselinePolicy
 
 
 def _env_key(*parts: str) -> str:

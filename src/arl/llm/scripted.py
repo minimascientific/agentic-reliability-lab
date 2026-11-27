@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Callable
 
 from pydantic import BaseModel
 
@@ -13,15 +14,17 @@ class ScriptedLLM:
     """Returns pre-written outputs, keyed by prompt name, in the order they were scripted.
 
     Each scripted item may be a Pydantic object (returned as-is), a dict (validated against
-    the requested schema, so tests exercise the same validation path as real output) or an
-    Exception (raised, to simulate refusals or malformed output).
+    the requested schema, so tests exercise the same validation path as real output), an
+    Exception (raised, to simulate refusals or malformed output), or a callable that receives
+    the prompt's user content and returns one of those. Callables let a stand-in answer only
+    from the information it was actually given at that stage.
     """
 
     model = "scripted"
 
     def __init__(
         self,
-        script: dict[str, list[BaseModel | dict | Exception]],
+        script: dict[str, list[BaseModel | dict | Exception | Callable[[str], object]]],
         tokens_per_call: tuple[int, int] = (1_000, 200),
     ):
         self._queues: dict[str, deque] = defaultdict(deque)
@@ -36,6 +39,8 @@ class ScriptedLLM:
         if not queue:
             raise LLMError(f"ScriptedLLM has no scripted output left for prompt {prompt.name!r}")
         item = queue.popleft()
+        if callable(item) and not isinstance(item, type):
+            item = item(user_content)
         if isinstance(item, Exception):
             raise item
         try:

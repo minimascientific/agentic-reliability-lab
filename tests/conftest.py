@@ -16,8 +16,8 @@ from arl.config import Limits
 from arl.graph.checkpointing import memory_checkpointer
 from arl.graph.workflow import Deps, build_workflow, new_run
 from arl.knowledge import KeywordRetriever
-from arl.llm import ScriptedLLM
-from arl.models import Classification, DiagnosticPlan, Incident, RemediationProposal, ToolRequest
+from arl.llm import ScriptedLLM, stand_in
+from arl.models import DiagnosticPlan, Incident, ToolRequest
 from arl.policy.approvals import InMemoryApprovalStore
 from arl.policy.engine import PolicyEngine
 from arl.remediation import RemediationExecutor, Verifier
@@ -83,17 +83,13 @@ def inc001() -> Incident:
 
 
 def happy_script(**overrides) -> dict:
-    """The model outputs for a clean INC-001 run. Override any prompt's list to vary it."""
+    """Model outputs for a clean INC-001 run. Override any prompt's list to vary it.
+
+    classify and propose use the evidence-aware stand-in, so they only conclude what the
+    evidence they receive supports. plan_diagnostics is fixed so the diagnostic loop runs.
+    """
     script = {
-        "classify": [
-            Classification(
-                category="database_connectivity",
-                severity=2,
-                affected_service="orders-api",
-                confidence=0.9,
-                rationale="Application errors suggest its database is unreachable.",
-            )
-        ],
+        "classify": [stand_in.classify],
         "plan_diagnostics": [
             DiagnosticPlan(
                 requests=[
@@ -105,17 +101,7 @@ def happy_script(**overrides) -> dict:
             ),
             DiagnosticPlan(requests=[], done=True, rationale="Evidence is sufficient."),
         ],
-        "propose_remediation": [
-            RemediationProposal(
-                escalate=False,
-                action_id="restart_service",
-                target="app-db",
-                evidence_ids=["EV-001", "EV-002"],
-                runbook_ids=["rb-db-connectivity"],
-                diagnosis="app-db refuses TCP connections, so orders-api health fails.",
-                confidence=0.85,
-            )
-        ],
+        "propose_remediation": [stand_in.propose_remediation],
     }
     script.update(overrides)
     return script
@@ -125,7 +111,13 @@ class Harness:
     """Builds the graph with fakes and drives it like the CLI or UI would."""
 
     def __init__(
-        self, script: dict, *, app_db_up: bool = False, fixes: bool = True, limits: Limits | None = None
+        self,
+        script: dict,
+        *,
+        app_db_up: bool = False,
+        fixes: bool = True,
+        limits: Limits | None = None,
+        incident: Incident | None = None,
     ):
         self.sandbox = FakeSandbox(app_db_up=app_db_up)
         self.platform = FakePlatform(self.sandbox, fixes=fixes)
@@ -155,7 +147,7 @@ class Harness:
             limits=self.limits,
         )
         self.graph = build_workflow(self.deps).compile(checkpointer=memory_checkpointer())
-        self.state = new_run(inc001())
+        self.state = new_run(incident or inc001())
         self.config = {"configurable": {"thread_id": self.state["run_id"]}, "recursion_limit": 50}
 
     @property

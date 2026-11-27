@@ -29,6 +29,11 @@ class Incident(BaseModel):
     description: str = Field(max_length=4000)
     caller: str
     opened_at: datetime
+    configuration_item: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Affected service as recorded on the ticket (ITSM 'CI'), if the caller knew it",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +84,18 @@ class Evidence(BaseModel):
     summary: str
     data: dict = Field(default_factory=dict)
     collected_at: datetime
+    phase: Literal["baseline", "diagnostic"] = Field(
+        default="diagnostic",
+        description="baseline = chosen by code before classification; diagnostic = requested by the model",
+    )
+
+
+class BaselineScope(BaseModel):
+    """Which services the deterministic baseline checks covered, and why."""
+
+    basis: Literal["configuration_item", "fallback_user_facing"]
+    services: list[str]
+    notes: list[str] = Field(default_factory=list, description="Machine-readable notes, e.g. scope_truncated")
 
 
 class RunbookRef(BaseModel):
@@ -138,6 +155,9 @@ class VerificationResult(BaseModel):
 class Escalation(BaseModel):
     reason: str = Field(description="Machine-readable reason code")
     detail: str
+    evidence: list[Evidence] = Field(
+        default_factory=list, description="Everything collected before escalating: the human's starting point"
+    )
 
 
 class LLMUsage(BaseModel):

@@ -7,6 +7,7 @@ services:
     health_url: http://localhost:8101/health
     tcp: {host: localhost, port: 8101}
     depends_on: [app-db]
+    user_facing: true
   app-db:
     description: PostgreSQL database backing orders-api.
     tcp: {host: localhost, port: 5434}

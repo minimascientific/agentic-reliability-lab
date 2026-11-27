@@ -20,71 +20,27 @@ from langgraph.types import Command
 
 from arl.audit import InMemoryAuditLog, verify_chain
 from arl.config import Settings
+from arl.evals import load_cases
 from arl.graph.checkpointing import memory_checkpointer
 from arl.graph.workflow import Deps, build_workflow, new_run
 from arl.knowledge import KeywordRetriever
-from arl.llm import ScriptedLLM
-from arl.models import (
-    Classification,
-    DiagnosticPlan,
-    Incident,
-    RemediationProposal,
-    ToolRequest,
-)
+from arl.llm import ScriptedLLM, stand_in
 from arl.policy.approvals import InMemoryApprovalStore
 from arl.policy.engine import PolicyEngine
+from arl.redaction import redact
 from arl.remediation import HttpPlatformOps, RemediationExecutor, Verifier
 from arl.tools.catalog import load_actions, load_policy, load_services
 from arl.tools.diagnostics import DiagnosticToolbox
 from arl.tools.probes import NetworkProbe
 
-DEMO_INCIDENT = Incident(
-    number="INC0010001",
-    short_description="Orders page shows errors for the whole Sales Ops team",
-    description="Since about 09:10 every order lookup returns 'service unavailable'. "
-    "Nothing changed on our side. Affects about 40 users.",
-    caller="dana.whitfield@corp.example",
-    opened_at=datetime(2026, 11, 25, 9, 14, tzinfo=UTC),
-)
+CASES = load_cases()
+DEFAULT_CASE = "inc001-symptom-only"
+DEMO_INCIDENT = CASES[DEFAULT_CASE].incident  # the original, symptom-only INC-001 ticket
 
 
 def scripted_model() -> ScriptedLLM:
-    """What a well-behaved model would answer for INC-001. Used when no API key is involved."""
-    return ScriptedLLM(
-        {
-            "classify": [
-                Classification(
-                    category="database_connectivity",
-                    severity=2,
-                    affected_service="orders-api",
-                    confidence=0.9,
-                    rationale="(scripted) Application errors point at its database.",
-                )
-            ],
-            "plan_diagnostics": [
-                DiagnosticPlan(
-                    requests=[
-                        ToolRequest(tool="check_service_health", service="orders-api"),
-                        ToolRequest(tool="check_tcp_port", service="app-db"),
-                    ],
-                    done=False,
-                    rationale="(scripted) Check the app, then its database port.",
-                ),
-                DiagnosticPlan(requests=[], done=True, rationale="(scripted) Enough evidence."),
-            ],
-            "propose_remediation": [
-                RemediationProposal(
-                    escalate=False,
-                    action_id="restart_service",
-                    target="app-db",
-                    evidence_ids=["EV-001", "EV-002"],
-                    runbook_ids=["rb-db-connectivity"],
-                    diagnosis="(scripted) app-db refuses connections; orders-api health fails.",
-                    confidence=0.85,
-                )
-            ],
-        }
-    )
+    """The free stand-in: answers each stage only from the content it is given (see stand_in.py)."""
+    return ScriptedLLM(stand_in.script())
 
 
 def build(settings: Settings, audit: InMemoryAuditLog):
@@ -122,13 +78,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--auto", choices=["approve", "reject"], help="answer the approval prompt automatically"
     )
+    parser.add_argument(
+        "--case", default=DEFAULT_CASE, choices=sorted(CASES), help="which evaluation case's ticket to run"
+    )
+    parser.add_argument(
+        "--show-model-output",
+        action="store_true",
+        help="print each structured model output (redacted) after the run",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
     print(f"LLM backend: {settings.llm_backend} ({settings.model})")
     audit = InMemoryAuditLog()
     graph = build(settings, audit)
-    state = new_run(DEMO_INCIDENT)
+    incident = CASES[args.case].incident
+    ci = incident.configuration_item or "none"
+    print(f"Case: {args.case} ({incident.number}, configuration item: {ci})")
+    state = new_run(incident)
     config = {"configurable": {"thread_id": state["run_id"]}, "recursion_limit": 60}
 
     # stream_mode="updates" yields one item per node as it finishes: a live view of the graph.
@@ -175,9 +142,23 @@ def main(argv: list[str] | None = None) -> int:
 
     final = graph.get_state(config).values
     esc = final.get("escalation")
-    print(f"\nRESULT: {final['status']}" + (f" ({esc.reason}: {esc.detail})" if esc else ""))
-    print(f"LLM usage: {final['usage'].model_dump()}")
     events = audit.events(final["run_id"])
+    if args.show_model_output:
+        print("\nMODEL OUTPUTS (redacted)")
+        for e in events:
+            if e.event_type.startswith("llm_"):
+                print(json.dumps(redact({"event": e.event_type, **e.data}), indent=2, default=str))
+    scope = final.get("baseline_scope")
+    if scope:
+        covered = ", ".join(scope.services) or "(none)"
+        print(f"\nBaseline scope: {scope.basis} -> {covered} {scope.notes or ''}")
+    print(f"\nRESULT: {final['status']}" + (f" ({esc.reason}: {esc.detail})" if esc else ""))
+    if esc:
+        print("Evidence handed to the human:")
+        for ev in esc.evidence:
+            status = "REFUSED" if ev.rejected else ("ok" if ev.ok else "FAILED")
+            print(f"  {ev.id} ({ev.phase}) {ev.tool} on {ev.service}: {status}: {redact(ev.summary)}")
+    print(f"LLM usage: {final['usage'].model_dump()}")
     print(f"Audit: {len(events)} events, hash chain valid = {verify_chain(events)}")
     return 0
 
