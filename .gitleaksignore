@@ -1,0 +1,5 @@
+# Fake test credentials in an earlier commit of tests/test_redaction.py (reviewed 2026-11-27).
+# The file now builds its fake values at runtime; these fingerprints cover only that commit.
+7da76f7e19fcad7339b4dfc1efc09e1b112b3d6c:tests/test_redaction.py:generic-api-key:5
+7da76f7e19fcad7339b4dfc1efc09e1b112b3d6c:tests/test_redaction.py:generic-api-key:6
+7da76f7e19fcad7339b4dfc1efc09e1b112b3d6c:tests/test_redaction.py:generic-api-key:16
