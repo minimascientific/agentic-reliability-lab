@@ -1,0 +1,56 @@
+# Evaluation cases: synthetic tickets, the fault state they assume, and the expected outcome.
+# The workflow tests run every case against the free stand-in model and a fake sandbox.
+# A runner for real Claude is a later increment; these cases are its starting set.
+cases:
+  - id: inc001-symptom-only
+    description: >
+      The original INC-001 ticket: a symptom only, with no configuration item. In the first
+      live run (2026-11-27, before baseline checks existed) Claude classified it as unknown,
+      confidence 0.4, and the run escalated. Kept unchanged as a regression case.
+    fault: app_db_stopped
+    incident:
+      number: INC0010001
+      short_description: Orders page shows errors for the whole Sales Ops team
+      description: >-
+        Since about 09:10 every order lookup returns 'service unavailable'. Nothing changed
+        on our side. Affects about 40 users.
+      caller: dana.whitfield@corp.example
+      opened_at: "2026-11-25T09:14:00Z"
+    expect:
+      baseline_basis: fallback_user_facing
+      category: database_connectivity
+      target: app-db
+      status_after_approval: resolved
+
+  - id: inc001-with-configuration-item
+    description: The same outage, reported with the affected service recorded on the ticket.
+    fault: app_db_stopped
+    incident:
+      number: INC0010002
+      short_description: Order lookups failing
+      description: Order lookups return 'service unavailable' for everyone in Sales Ops.
+      caller: sam.okafor@corp.example
+      opened_at: "2026-11-25T09:20:00Z"
+      configuration_item: orders-api
+    expect:
+      baseline_basis: configuration_item
+      category: database_connectivity
+      target: app-db
+      status_after_approval: resolved
+
+  - id: symptom-but-healthy
+    description: >
+      A complaint about the same page while every check is healthy. There is nothing to fix,
+      so the run must escalate with its evidence and never request an approval.
+    fault: none
+    incident:
+      number: INC0010003
+      short_description: Orders page slow this morning
+      description: The orders page felt slow for a while this morning. It seems fine now.
+      caller: dana.whitfield@corp.example
+      opened_at: "2026-11-26T10:02:00Z"
+    expect:
+      baseline_basis: fallback_user_facing
+      category: unknown
+      status: escalated
+      escalation: classification_uncertain

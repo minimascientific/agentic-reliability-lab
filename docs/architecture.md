@@ -13,6 +13,7 @@ let it change anything.
 | LangGraph workflow (`arl/graph`) | Orders the steps, routes between them, pauses for approval | Deterministic |
 | LLM client (`arl/llm`) | Returns typed proposals: classification, diagnostic plan, remediation | Untrusted output |
 | Diagnostic toolbox (`arl/tools`) | Runs allowlisted read-only checks against the sandbox | Deterministic, read-only |
+| Baseline scope (`arl/tools/baseline.py`) | Chooses first checks from the ticket's configuration item and catalog dependencies | Deterministic, read-only |
 | Runbook retriever (`arl/knowledge.py`) | Finds relevant runbooks for the model to cite | Deterministic |
 | Policy engine (`arl/policy/engine.py`) | Allow, deny, or require approval, with reason codes | Deterministic |
 | Approvals (`arl/policy/approvals.py`) | Bind a human decision to one action, target and incident | Deterministic |
@@ -33,8 +34,10 @@ graph TD;
 	__start__([start]):::first
 	__end__([end]):::last
 	__start__ --> intake;
-	intake -.-> classify;
+	intake -.-> baseline_diagnostics;
 	intake -.-> escalate;
+	baseline_diagnostics -.-> classify;
+	baseline_diagnostics -.-> escalate;
 	classify -.-> plan_diagnostics;
 	classify -.-> escalate;
 	plan_diagnostics -.-> run_diagnostics;
@@ -74,6 +77,10 @@ graph TD;
   `_guard`, which sends the run to `escalate` if any node recorded an escalation or the step
   limit is reached. Only then does the node-specific router run (for example
   `after_policy_gate` maps `allow` / `requires_approval` / `deny`).
+- **Evidence before classification:** `baseline_diagnostics` runs before the first model call.
+  Code chooses the services (the ticket's configuration item and its `depends_on` chain, or
+  the catalog's user-facing services when the ticket names none), bounded by depth, service
+  count and `max_tool_calls`. See [ADR 0005](adr/0005-baseline-diagnostics-before-classification.md).
 - **Tool calling:** the model does not call tools directly. It returns a typed
   `DiagnosticPlan` naming tools; `run_diagnostics` enforces the allowlist and executes them.
   This keeps execution in our code, where it can be limited and audited.

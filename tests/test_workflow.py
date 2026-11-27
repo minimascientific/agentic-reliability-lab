@@ -28,8 +28,11 @@ def test_happy_path_pauses_for_approval_then_restarts_and_verifies():
     assert [target for target, _ in h.platform.calls] == ["app-db"]
     assert final["verification"].passed
     ev = {e.id: e for e in final["evidence"]}
+    # Baseline (code-chosen) evidence comes first: orders-api health, orders-api TCP, app-db TCP.
+    assert [ev[i].phase for i in ("EV-001", "EV-002", "EV-003")] == ["baseline"] * 3
     assert not ev["EV-001"].ok and "503" in ev["EV-001"].summary  # orders-api unhealthy
-    assert not ev["EV-002"].ok and "refused" in ev["EV-002"].summary.lower()  # app-db down
+    assert not ev["EV-003"].ok and "refused" in ev["EV-003"].summary.lower()  # app-db down
+    assert {"EV-001", "EV-003"} <= set(final["proposal"].evidence_ids)
     assert final["runbooks"][0].id == "rb-db-connectivity"
 
 
@@ -130,7 +133,7 @@ def test_proposal_without_evidence_is_denied():
     assert "evidence_missing" in final["policy_decision"].reasons
 
 
-def test_low_confidence_classification_escalates_before_any_tool_runs():
+def test_low_confidence_classification_escalates_before_any_model_requested_tool_runs():
     unsure = Classification(
         category="database_connectivity",
         severity=3,
@@ -141,7 +144,8 @@ def test_low_confidence_classification_escalates_before_any_tool_runs():
     h = Harness(happy_script(classify=[unsure]))
     final = h.start()
     assert final["escalation"].reason == "classification_uncertain"
-    assert final["evidence"] == []
+    assert {e.phase for e in final["evidence"]} == {"baseline"}  # only code-chosen checks ran
+    assert final["escalation"].evidence == final["evidence"]  # handed to the human
     assert h.platform.calls == []
 
 
@@ -236,5 +240,5 @@ def test_ticket_text_is_passed_to_the_model_inside_untrusted_tags():
     h = Harness(happy_script())
     h.start()
     prompt_id, content = h.llm.calls[0]
-    assert prompt_id == "classify@v1"
+    assert prompt_id == "classify@v2"
     assert "<ticket>" in content and "</ticket>" in content

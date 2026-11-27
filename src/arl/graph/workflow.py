@@ -1,6 +1,7 @@
 """The INC-001 incident workflow as a LangGraph StateGraph.
 
-    intake -> classify -> plan_diagnostics <-> run_diagnostics -> retrieve_runbook -> propose
+    intake -> baseline_diagnostics -> classify -> plan_diagnostics <-> run_diagnostics
+      -> retrieve_runbook -> propose
       -> policy_gate -> request_approval -> await_approval -> execute -> verify -> resolve
     Any step can route to `escalate` instead.
 
@@ -9,6 +10,7 @@ Who decides what (the core design rule):
     LLM (proposes)                        Deterministic code (decides and acts)
     ------------------------------------  ----------------------------------------------------
     classify: category, severity          intake, routing between every pair of nodes
+                                          baseline_diagnostics: which services to check first
     plan_diagnostics: which checks next   run_diagnostics: allowlist enforcement, execution
     propose: action, target, diagnosis    policy_gate: allow / requires approval / deny
                                           request/await_approval, execute, verify, escalate
@@ -47,8 +49,9 @@ from arl.policy import approvals as approval_mod
 from arl.policy.approvals import ApprovalStore
 from arl.policy.engine import PolicyEngine
 from arl.remediation import RemediationExecutor, UnauthorizedAction, Verifier
+from arl.tools.baseline import applicable_tools, baseline_scope
 from arl.tools.catalog import Action, Policy
-from arl.tools.diagnostics import DiagnosticToolbox
+from arl.tools.diagnostics import DiagnosticToolbox, describe_services
 
 
 @dataclass
@@ -90,7 +93,7 @@ def _ticket_block(incident: Incident) -> str:
 
 def _evidence_block(state: RunState) -> str:
     lines = [
-        f"- {e.id} [{e.tool} on {e.service}] {'REFUSED: ' if e.rejected else ''}"
+        f"- {e.id} ({e.phase}) [{e.tool} on {e.service}] {'REFUSED: ' if e.rejected else ''}"
         f"{'ok' if e.ok else 'FAILED'}: {e.summary}"
         for e in state.get("evidence", [])
     ]
@@ -165,9 +168,32 @@ def build_workflow(deps: Deps):
         )
         return {"steps": 1}
 
+    def baseline_diagnostics(state: RunState) -> dict:
+        """Code, not the model, gathers first evidence: read-only, scoped, within max_tool_calls."""
+        scope = baseline_scope(
+            deps.toolbox.services, state["incident"].configuration_item, deps.policy.baseline
+        )
+        audit(state, "system", "baseline_scope", scope.model_dump())
+        new, calls = [], state.get("tool_calls", 0)
+        next_id = len(state.get("evidence", [])) + 1
+        for name in scope.services:
+            for tool in applicable_tools(deps.toolbox.services[name], deps.policy.baseline.tools):
+                if calls >= limits.max_tool_calls:
+                    audit(state, "system", "tool_limit_reached", {"max_tool_calls": limits.max_tool_calls})
+                    return {"baseline_scope": scope, "evidence": new, "tool_calls": calls, "steps": 1}
+                ev = deps.toolbox.run_baseline(tool, name, evidence_id=f"EV-{next_id:03d}")
+                next_id += 1
+                calls += 1
+                audit(state, "tool", "tool_call", ev.model_dump(mode="json"))
+                new.append(ev)
+        return {"baseline_scope": scope, "evidence": new, "tool_calls": calls, "steps": 1}
+
     def classify(state: RunState) -> dict:
-        content = f"{_ticket_block(state['incident'])}\n\nService catalog:\n" + "\n".join(
-            f"- {s.name}: {s.description}" for s in deps.toolbox.services.values()
+        content = (
+            f"{_ticket_block(state['incident'])}\n\n"
+            f"Service catalog:\n{describe_services(deps.toolbox.services)}\n\n"
+            f"Baseline checks were chosen by code, not by you: {state['baseline_scope'].model_dump_json()}\n"
+            f"{_evidence_block(state)}"
         )
         output, update = call_llm(state, "classify", content, Classification)
         update["steps"] = 1
@@ -245,6 +271,7 @@ def build_workflow(deps: Deps):
         content = (
             f"{_ticket_block(state['incident'])}\n\n"
             f"Classification: {state['classification'].model_dump_json()}\n\n"
+            f"Service catalog:\n{describe_services(deps.toolbox.services)}\n\n"
             f"{_evidence_block(state)}\n\n{runbooks or '(no runbook found)'}\n\n"
             f"Action catalog:\n{catalog}"
         )
@@ -334,6 +361,8 @@ def build_workflow(deps: Deps):
         esc = state.get("escalation") or Escalation(
             reason="step_limit_reached", detail=f"max_graph_steps={limits.max_graph_steps}"
         )
+        # Hand the human everything collected so far, so they start from evidence, not from zero.
+        esc = esc.model_copy(update={"evidence": list(state.get("evidence", []))})
         audit(
             state,
             "system",
@@ -341,6 +370,11 @@ def build_workflow(deps: Deps):
             {
                 "reason": esc.reason,
                 "detail": esc.detail,
+                "classification": c.model_dump() if (c := state.get("classification")) else None,
+                "evidence": [
+                    {"id": e.id, "phase": e.phase, "service": e.service, "ok": e.ok, "summary": e.summary}
+                    for e in esc.evidence
+                ],
                 "usage": state.get("usage", LLMUsage()).model_dump(),
             },
         )
@@ -381,6 +415,7 @@ def build_workflow(deps: Deps):
     graph = StateGraph(RunState)
     for fn in (
         intake,
+        baseline_diagnostics,
         classify,
         plan_diagnostics,
         run_diagnostics,
@@ -398,7 +433,8 @@ def build_workflow(deps: Deps):
 
     graph.add_edge(START, "intake")
     edges = {
-        "intake": (to("classify"), ["classify"]),
+        "intake": (to("baseline_diagnostics"), ["baseline_diagnostics"]),
+        "baseline_diagnostics": (to("classify"), ["classify"]),
         "classify": (to("plan_diagnostics"), ["plan_diagnostics"]),
         "plan_diagnostics": (to("run_diagnostics"), ["run_diagnostics"]),
         "run_diagnostics": (after_run_diagnostics, ["plan_diagnostics", "retrieve_runbook"]),

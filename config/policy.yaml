@@ -8,7 +8,14 @@ approval:
   ttl_minutes: 15
   # Change types that may run without a human. Empty: every write needs approval.
   auto_approve_change_types: []
-# Diagnostic tools allowed per incident category (read-only).
+# Baseline checks: run by code, before classification, on services chosen from the catalog
+# (the ticket's configuration item and its dependencies, or user-facing services if the
+# ticket has none). The model does not choose these. They count against max_tool_calls.
+baseline:
+  tools: [check_service_health, check_tcp_port]
+  max_dependency_depth: 2
+  max_services: 3
+# Diagnostic tools the model may request, per incident category (read-only).
 diagnostic_tools:
   database_connectivity: [check_service_health, check_tcp_port]
   integration_failure: [check_service_health]

@@ -19,6 +19,15 @@ from arl.tools.catalog import Policy, Service
 from arl.tools.probes import Probe
 
 
+def describe_services(services: dict[str, Service]) -> str:
+    """Catalog lines for prompts, including dependencies (facts the model needs to reason)."""
+    lines = []
+    for s in services.values():
+        deps = f" Depends on: {', '.join(s.depends_on)}." if s.depends_on else ""
+        lines.append(f"- {s.name}: {s.description}{deps}")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -60,7 +69,7 @@ class DiagnosticToolbox:
 
     def describe(self, category: str) -> str:
         tools = "\n".join(f"- {t.name}: {t.description}" for t in self.allowed_tools(category))
-        services = "\n".join(f"- {s.name}: {s.description}" for s in self.services.values())
+        services = describe_services(self.services)
         return f"Diagnostic tools:\n{tools or '- (none for this category)'}\n\nServices:\n{services}"
 
     # -- execution, with the allowlist enforced here, not in the prompt ----------------------
@@ -75,19 +84,40 @@ class DiagnosticToolbox:
         service = self.services.get(request.service)
         if service is None:
             return self._rejected(evidence_id, request, "service_not_in_catalog", now)
-        ok, summary, data = self.tools[request.tool].run(service)
+        return self._execute(request.tool, service, evidence_id, now, phase="diagnostic")
+
+    def run_baseline(self, tool: str, service_name: str, evidence_id: str) -> Evidence:
+        """Run a baseline check chosen by code (never by the model), under its own allowlist."""
+        now = datetime.now(UTC)
+        request = ToolRequest(tool=tool, service=service_name)
+        if tool not in self.tools:
+            return self._rejected(evidence_id, request, "tool_not_in_registry", now, phase="baseline")
+        if tool not in self.policy.baseline.tools:
+            return self._rejected(
+                evidence_id, request, "tool_not_allowed_for_baseline", now, phase="baseline"
+            )
+        service = self.services.get(service_name)
+        if service is None:
+            return self._rejected(evidence_id, request, "service_not_in_catalog", now, phase="baseline")
+        return self._execute(tool, service, evidence_id, now, phase="baseline")
+
+    def _execute(self, tool: str, service: Service, evidence_id: str, now: datetime, phase: str) -> Evidence:
+        ok, summary, data = self.tools[tool].run(service)
         return Evidence(
             id=evidence_id,
-            tool=request.tool,
+            tool=tool,
             service=service.name,
             ok=ok,
             summary=summary,
             data=data,
             collected_at=now,
+            phase=phase,
         )
 
     @staticmethod
-    def _rejected(evidence_id: str, request: ToolRequest, reason: str, now: datetime) -> Evidence:
+    def _rejected(
+        evidence_id: str, request: ToolRequest, reason: str, now: datetime, phase: str = "diagnostic"
+    ) -> Evidence:
         return Evidence(
             id=evidence_id,
             tool=request.tool,
@@ -97,6 +127,7 @@ class DiagnosticToolbox:
             summary=f"request refused: {reason}",
             data={"reason": reason},
             collected_at=now,
+            phase=phase,
         )
 
     # -- deterministic checks reused by post-remediation verification ----------------------

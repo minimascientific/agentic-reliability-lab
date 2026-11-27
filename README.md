@@ -21,7 +21,7 @@ The sandbox's `app-db` PostgreSQL container is **really stopped** (`make fault-d
 
 ```mermaid
 flowchart LR
-    intake --> classify --> plan[plan_diagnostics]
+    intake --> baseline[baseline_diagnostics] --> classify --> plan[plan_diagnostics]
     plan --> run[run_diagnostics]
     run -->|more checks needed| plan
     run --> retrieve[retrieve_runbook] --> propose --> gate[policy_gate]
@@ -36,13 +36,15 @@ flowchart LR
 ```
 
 Every edge also routes to `escalate` if a limit is hit (steps, diagnostic rounds, tool calls,
-LLM calls, tokens or cost). See [docs/architecture.md](docs/architecture.md).
+LLM calls, tokens or cost). See [docs/architecture.md](docs/architecture.md). How the design got here, including what
+the first live model run exposed, is in the [engineering journal](docs/engineering-journal.md).
 
 ## Who decides what
 
 | Decision | Made by | Where |
 | --- | --- | --- |
-| Incident category, severity, affected service | **LLM** (proposal) | `classify` node |
+| Which services to check first, before any model call | Code | `baseline_diagnostics` node |
+| Incident category, severity, affected service | **LLM** (proposal, given that evidence) | `classify` node |
 | Which diagnostic checks to run next | **LLM** (proposal) | `plan_diagnostics` node |
 | Whether a requested check is allowed, and running it | Code | `DiagnosticToolbox.run` |
 | Diagnosis, proposed action and target | **LLM** (proposal) | `propose` node |
@@ -99,13 +101,15 @@ To use real Claude instead of the scripted model, put your key in `.env` and run
 ## Tests
 
 ```bash
-make test               # 37 unit and workflow tests: no Docker, no API key, no cost
+make test               # 61 unit and workflow tests: no Docker, no API key, no cost
 make test-integration   # real outage + database permission tests (needs `make up`)
 make lint               # ruff, including bandit security rules
 ```
 
-Routine tests use `ScriptedLLM`, a deterministic stand-in for the model, so CI is free and
-repeatable. They prove, among other things, that a rejected approval, an approval for a
+Routine tests use `ScriptedLLM` with an evidence-aware stand-in (`arl/llm/stand_in.py`) that
+only concludes what the evidence it receives supports, so CI is free and repeatable without
+assuming hindsight. Evaluation cases, including the original symptom-only ticket, live in
+[`evals/cases.yaml`](evals/cases.yaml); run one with `uv run arl-demo --case <id>`. They prove, among other things, that a rejected approval, an approval for a
 different action, a self-approval, an expired or reused approval, an invented action, and a
 protected target **never reach the platform**. A separate evaluation suite against real
 Claude comes in a later increment.
@@ -117,6 +121,8 @@ Claude comes in a later increment.
 | Sandbox: app-db, orders-api, ops-db, real fault injection | Implemented |
 | LangGraph workflow with approval interrupt and escalation paths | Implemented |
 | Read-only diagnostics: service health, TCP | Implemented |
+| Baseline checks before classification, scoped by configuration item and dependencies | Implemented, tested with the stand-in model; live Claude re-test pending |
+| Redacted model-output debugging (`arl-demo --show-model-output`) | Implemented |
 | Policy engine, approval binding, executor re-checks, verifier | Implemented |
 | Audit trail: in-memory and Postgres (append-only role) | Implemented |
 | LLM budget: calls, tokens, cost per run | Implemented |
@@ -131,7 +137,8 @@ Claude comes in a later increment.
 ```
 config/            service catalog, action catalog, policy (YAML)
 db/                ops-db and app-db schemas, least-privilege roles
-docs/              architecture, decision records, runbooks (the retrieval corpus)
+docs/              architecture, decision records, engineering journal, runbooks
+evals/             evaluation cases (synthetic tickets and expected outcomes)
 src/arl/
   graph/           LangGraph state, workflow, checkpointing
   llm/             LLM interface, scripted model, Claude client
