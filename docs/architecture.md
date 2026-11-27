@@ -17,8 +17,10 @@ let it change anything.
 | Policy engine (`arl/policy/engine.py`) | Allow, deny, or require approval, with reason codes | Deterministic |
 | Approvals (`arl/policy/approvals.py`) | Bind a human decision to one action, target and incident | Deterministic |
 | Executor and verifier (`arl/remediation.py`) | Re-check, act through platform-ops, measure the result | Deterministic |
+| platform-ops (`arl/services/platform_ops.py`) | One restart endpoint: token, own target allowlist, idempotency, rate limit | Deterministic, separate process |
+| docker-proxy (socket proxy) | Forwards only container stop/restart/kill to Docker | Off-the-shelf, internal network only |
 | Audit log (`arl/audit.py`) | Append-only, hash-chained record of every step | Deterministic |
-| Sandbox (`docker-compose.yml`) | `app-db`, `orders-api`, `ops-db` | Synthetic |
+| Sandbox (`docker-compose.yml`) | `app-db`, `orders-api`, `ops-db`, `platform-ops`, `docker-proxy` | Synthetic |
 
 `ops-db` (the agent's records) is separate from `app-db` (the thing that breaks), so a broken
 application database never takes the audit trail or checkpoints with it.
@@ -92,6 +94,17 @@ action_hash = sha256(canonical_json({run_id, incident, action_id, target}))
 
 The approver sees the hash; the decision must carry it back. The executor recomputes it from
 what is about to run and refuses on mismatch, expiry, a non-human approver, or reuse.
+
+## The restart path
+
+```
+executor --HTTP, bearer token, Idempotency-Key--> platform-ops --internal network--> docker-proxy --socket--> Docker
+ (re-checks policy       (own allowlist: app-db only,         (only stop/restart/kill
+  and approval)           1 restart/min, replay on retry)      pass; all else 403)
+```
+
+See [ADR 0004](adr/0004-restarts-through-platform-ops.md) for why three layers, and the
+known gap (the proxy filters operations, not container names).
 
 ## Limits (per run)
 

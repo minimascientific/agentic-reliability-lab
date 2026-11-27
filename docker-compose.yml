@@ -22,6 +22,7 @@ services:
 
   app-db:
     image: postgres:16
+    container_name: arl-app-db   # fixed name: platform-ops maps the target "app-db" to it
     environment:
       POSTGRES_DB: orders
       POSTGRES_USER: app_admin
@@ -46,7 +47,54 @@ services:
     ports: ["127.0.0.1:8101:8000"]
     depends_on:
       app-db: {condition: service_healthy}
+    healthcheck:   # /health is 503 while app-db is down, so this shows "unhealthy" during INC-001
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
     restart: unless-stopped
+
+  # The ONLY path from the agent to Docker: agent -> platform-ops -> docker-proxy -> Docker.
+  # The proxy forwards container stop/restart/kill and nothing else (POST=1 is needed for
+  # those calls; every other write section stays at its default of denied). It has no
+  # published port and sits on its own network, so only platform-ops can reach it.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    environment:
+      POST: 1
+      ALLOW_RESTARTS: 1
+      CONTAINERS: 0
+      IMAGES: 0
+      EXEC: 0
+      VOLUMES: 0
+      NETWORKS: 0
+      BUILD: 0
+      DISABLE_IPV6: 1   # listen on IPv4 only; some Docker hosts have no IPv6
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-api]
+    restart: unless-stopped
+
+  platform-ops:
+    build: .
+    command: ["uvicorn", "--factory", "arl.services.platform_ops:app_from_env",
+              "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PLATFORM_OPS_TOKEN: ${PLATFORM_OPS_TOKEN:?set in .env}
+      DOCKER_PROXY_URL: http://docker-proxy:2375
+    ports: ["127.0.0.1:8190:8000"]
+    networks: [default, docker-api]
+    depends_on: [docker-proxy]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+networks:
+  docker-api:
+    internal: true   # no route outside Docker; only docker-proxy and platform-ops are on it
 
 volumes:
   ops-data:

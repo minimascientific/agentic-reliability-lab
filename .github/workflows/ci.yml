@@ -35,8 +35,8 @@ jobs:
       - name: Create throwaway .env for this run only
         run: |
           cp .env.example .env
-          for v in change-me-ops-admin change-me-agent change-me-app-admin change-me-orders; do
-            sed -i "s/$v/$(openssl rand -hex 16)/g" .env
+          for v in change-me-ops-admin change-me-agent change-me-app-admin change-me-orders change-me-platform-ops-token-at-least-32-chars; do
+            sed -i "s/$v/$(openssl rand -hex 24)/g" .env
           done
       - name: Start sandbox
         run: docker compose up -d --build --wait
